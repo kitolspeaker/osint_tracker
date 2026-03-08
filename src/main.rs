@@ -4,6 +4,7 @@
 use clap::Parser;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
+use serde::Serialize;
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -24,6 +25,10 @@ const BULK_RATE_LIMIT_SECS: u64 = 15;
 struct Args {
     #[command(flatten)]
     input: InputSource,
+
+    /// Export aggregated results to a file. Format is inferred from extension (.json or .csv).
+    #[arg(short, long, value_name = "FILE_PATH")]
+    output: Option<PathBuf>,
 }
 
 /// Exactly one of --ip or --file must be provided.
@@ -200,6 +205,107 @@ async fn fetch_shodan(
 
 // ---------- Output ----------
 
+/// One row of aggregated OSINT data for export (JSON/CSV).
+#[derive(Debug, Clone, Serialize)]
+struct ExportRecord {
+    ip: String,
+    vt_as_owner: Option<String>,
+    vt_malicious: Option<u32>,
+    vt_suspicious: Option<u32>,
+    vt_harmless: Option<u32>,
+    vt_error: Option<String>,
+    shodan_org: Option<String>,
+    shodan_os: Option<String>,
+    shodan_ports: String,
+    shodan_error: Option<String>,
+}
+
+fn build_export_record(
+    ip: IpAddr,
+    vt_result: &Result<IpReportResponse, String>,
+    shodan_result: &Result<Option<ShodanHostResponse>, String>,
+) -> ExportRecord {
+    let (vt_as_owner, vt_malicious, vt_suspicious, vt_harmless, vt_error) = match vt_result {
+        Ok(r) => (
+            r.data.attributes.as_owner.clone(),
+            Some(r.data.attributes.last_analysis_stats.malicious),
+            Some(r.data.attributes.last_analysis_stats.suspicious),
+            Some(r.data.attributes.last_analysis_stats.harmless),
+            None,
+        ),
+        Err(e) => (None, None, None, None, Some(e.clone())),
+    };
+    let (shodan_org, shodan_os, shodan_ports, shodan_error) = match shodan_result {
+        Ok(Some(h)) => (
+            h.org.clone(),
+            h.os.clone(),
+            if h.ports.is_empty() {
+                "(none)".to_string()
+            } else {
+                h.ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            },
+            None,
+        ),
+        Ok(None) => (
+            None,
+            None,
+            "(none)".to_string(),
+            Some("No Shodan data available".to_string()),
+        ),
+        Err(e) => (None, None, String::new(), Some(e.clone())),
+    };
+    ExportRecord {
+        ip: ip.to_string(),
+        vt_as_owner,
+        vt_malicious,
+        vt_suspicious,
+        vt_harmless,
+        vt_error,
+        shodan_org,
+        shodan_os,
+        shodan_ports,
+        shodan_error,
+    }
+}
+
+/// Writes aggregated records to file. Format from extension: .json or .csv.
+fn export_results(path: &PathBuf, records: &[ExportRecord]) -> Result<(), String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase());
+    match ext.as_deref() {
+        Some("json") => {
+            let f = std::fs::File::create(path)
+                .map_err(|e| format!("Cannot create output file {:?}: {}", path, e))?;
+            serde_json::to_writer_pretty(f, records)
+                .map_err(|e| format!("JSON export failed: {}", e))?;
+        }
+        Some("csv") => {
+            let f = std::fs::File::create(path)
+                .map_err(|e| format!("Cannot create output file {:?}: {}", path, e))?;
+            let mut wtr = csv::Writer::from_writer(f);
+            for rec in records {
+                wtr.serialize(rec).map_err(|e| format!("CSV write failed: {}", e))?;
+            }
+            wtr.flush().map_err(|e| format!("CSV flush failed: {}", e))?;
+        }
+        _ => {
+            return Err(format!(
+                "Unknown output format. Use a .json or .csv extension (got {:?}).",
+                path.extension()
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------- Report printing ----------
+
 /// Prints one OSINT report (VirusTotal + Shodan) for a single IP.
 fn print_report(
     ip: IpAddr,
@@ -273,13 +379,17 @@ async fn main() {
     };
 
     let bulk = ips.len() > 1;
-    if let Err(e) = run(ips, bulk).await {
+    if let Err(e) = run(ips, bulk, args.output).await {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
 
-async fn run(ips: Vec<IpAddr>, bulk_mode: bool) -> Result<(), String> {
+async fn run(
+    ips: Vec<IpAddr>,
+    bulk_mode: bool,
+    output_path: Option<PathBuf>,
+) -> Result<(), String> {
     dotenv::dotenv().ok();
 
     let vt_api_key = get_vt_api_key()?;
@@ -287,6 +397,7 @@ async fn run(ips: Vec<IpAddr>, bulk_mode: bool) -> Result<(), String> {
     let client = build_client().map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     let total = ips.len();
+    let mut export_records: Vec<ExportRecord> = Vec::with_capacity(total);
 
     for (i, &ip) in ips.iter().enumerate() {
         if bulk_mode {
@@ -303,6 +414,7 @@ async fn run(ips: Vec<IpAddr>, bulk_mode: bool) -> Result<(), String> {
             vt_result.as_ref().map_err(|e| e.clone())?;
         }
 
+        export_records.push(build_export_record(ip, &vt_result, &shodan_result));
         print_report(ip, &vt_result, &shodan_result);
 
         // VT free tier: 4 req/min — mandatory delay between IPs in bulk to avoid 429.
@@ -313,6 +425,11 @@ async fn run(ips: Vec<IpAddr>, bulk_mode: bool) -> Result<(), String> {
             );
             tokio::time::sleep(std::time::Duration::from_secs(BULK_RATE_LIMIT_SECS)).await;
         }
+    }
+
+    if let Some(path) = output_path {
+        export_results(&path, &export_records)?;
+        println!("Exported {} record(s) to {:?}", export_records.len(), path);
     }
 
     Ok(())

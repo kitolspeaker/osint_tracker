@@ -57,6 +57,7 @@ You must provide **either** a single IP **or** a file path—the two options are
 |---------------------|-------|--------------------------------------------------|
 | `--ip <IP_ADDRESS>` | `-i`  | Single-IP lookup (one target).                   |
 | `--file <FILE_PATH>`| `-f`  | Bulk lookup: text file with one IP per line.    |
+| `--output <FILE_PATH>` | `-o` | Optional. Export aggregated results to a file (format from extension: `.json` or `.csv`). |
 
 ### Single-IP mode
 
@@ -85,6 +86,26 @@ cargo run -- -f ips.txt
 ### Rate limiting (bulk mode)
 
 To respect **VirusTotal’s free-tier limit of 4 requests per minute**, the tool enforces a **15-second delay** between processing each IP when running in bulk mode. This avoids HTTP 429 (Too Many Requests) and aligns with typical API usage policies. The delay is applied only between IPs; there is no delay after the last IP.
+
+### Exporting results (`--output`)
+
+You can export the aggregated results (all IPs processed in the run) to a JSON or CSV file. The format is **determined by the file extension**: use `.json` for JSON or `.csv` for CSV.
+
+**JSON export** (one array of objects; good for scripting or tooling):
+
+```bash
+cargo run -- --ip 8.8.8.8 --output report.json
+cargo run -- --file ips.txt --output results.json
+```
+
+**CSV export** (one row per IP; good for spreadsheets):
+
+```bash
+cargo run -- --ip 8.8.8.8 --output report.csv
+cargo run -- --file ips.txt --output results.csv
+```
+
+**Exported fields:** For each IP, the file includes: `ip`, VirusTotal fields (`vt_as_owner`, `vt_malicious`, `vt_suspicious`, `vt_harmless`, or `vt_error` if the lookup failed), Shodan fields (`shodan_org`, `shodan_os`, `shodan_ports`, or `shodan_error` if unavailable/failed). Terminal output is unchanged; the file is written after all IPs are processed.
 
 ### Help
 
@@ -126,6 +147,8 @@ cargo build --release
 ./target/release/osint_tracker --help
 ./target/release/osint_tracker --ip 8.8.8.8
 ./target/release/osint_tracker --file ips.txt
+./target/release/osint_tracker --file ips.txt --output report.json
+./target/release/osint_tracker --ip 1.1.1.1 --output scan.csv
 ```
 
 ## License
