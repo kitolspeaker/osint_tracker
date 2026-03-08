@@ -1,12 +1,22 @@
 //! Asynchronous OSINT tracker: fetches VirusTotal IP report and prints selected attributes.
 //! Loads API key from .env; no sensitive data is logged.
 
+use clap::Parser;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use std::env;
+use std::net::IpAddr;
 
 const VT_IP_REPORT_URL: &str = "https://www.virustotal.com/api/v3/ip_addresses";
-const TEST_IP: &str = "8.8.8.8";
+
+/// Automated OSINT IP tracker — queries the VirusTotal API for IP report data.
+#[derive(Parser, Debug)]
+#[command(name = "osint_tracker", about = "Query VirusTotal for IP reputation and attributes.")]
+struct Args {
+    /// Target IP address to look up (IPv4 or IPv6).
+    #[arg(required = true, value_name = "IP_ADDRESS")]
+    ip: IpAddr,
+}
 
 /// VirusTotal `last_analysis_stats` subset (malicious, suspicious, harmless).
 /// Other fields (e.g. undetected, timeout) are ignored via serde.
@@ -53,20 +63,22 @@ fn get_api_key() -> Result<String, String> {
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = run().await {
+    let args = Args::parse();
+
+    if let Err(e) = run(args.ip).await {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<(), String> {
+async fn run(ip: IpAddr) -> Result<(), String> {
     // Load .env so VT_API_KEY is available (secure: not logged).
     dotenv::dotenv().ok();
 
     let api_key = get_api_key()?;
     let client = build_client().map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    let url = format!("{}/{}", VT_IP_REPORT_URL.trim_end_matches('/'), TEST_IP);
+    let url = format!("{}/{}", VT_IP_REPORT_URL.trim_end_matches('/'), ip);
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("x-apikey"),
@@ -102,7 +114,7 @@ async fn run() -> Result<(), String> {
     let attrs = &report.data.attributes;
     let stats = &attrs.last_analysis_stats;
 
-    println!("=== OSINT Report: IP {} ===\n", TEST_IP);
+    println!("=== OSINT Report: IP {} ===\n", ip);
     println!("AS owner: {}", attrs.as_owner.as_deref().unwrap_or("(unknown)"));
     println!("\nLast analysis stats:");
     println!("  Malicious:  {}", stats.malicious);
