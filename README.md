@@ -2,6 +2,19 @@
 
 Automated **OSINT IP Tracker** that queries **VirusTotal** and **Shodan** concurrently for one or many IP addresses. It supports **single-IP lookup** and **bulk scan from a text file**, retrieving VirusTotal reputation (last analysis stats, AS owner) and Shodan host data (open ports, organization, OS).
 
+## Key Features & Tech Stack
+
+- **High-Performance Concurrency** — Built with `tokio` to perform asynchronous API requests concurrently, minimizing wait times for multi-source intelligence gathering.
+- **Defensive Programming** — Utilizes Rust’s strict type system (`std::net::IpAddr`) to validate and sanitize IP inputs before any network activity.
+- **Production-Grade CLI** — Powered by `clap` (v4) with mutually exclusive arguments and built-in help menus.
+- **Resilient Error Handling** — Gracefully handles API failures and network timeouts without halting bulk operations.
+
+## Security & Best Practices
+
+- **Environment Secrecy** — Uses `dotenv` to prevent sensitive API keys from being hardcoded or accidentally committed to source control.
+- **Input Sanitization** — Automatically ignores malformed lines and invalid IP formats to prevent processing errors during bulk scans.
+- **API Integrity** — Implements 15-second back-off timers to comply with provider terms of service and avoid IP blacklisting.
+
 ## Prerequisites
 
 - **Rust** — Install from [rustup.rs](https://rustup.rs/) (stable toolchain).
@@ -27,7 +40,7 @@ Automated **OSINT IP Tracker** that queries **VirusTotal** and **Shodan** concur
    @"
    VT_API_KEY=your_virustotal_key_here
    SHODAN_API_KEY=your_shodan_key_here
-   "@ | Set-Content -Path .env -Encoding utf8
+   "@ | Set-Content -Path .env
 
    # Linux / macOS
    echo 'VT_API_KEY=your_virustotal_key_here
@@ -65,7 +78,7 @@ cargo run -- -f ips.txt
 
 **Bulk mode behavior:**
 
-- The tool processes each IP in order. VirusTotal and Shodan are queried **concurrently per IP**.
+- Uses a streaming file reader (BufReader) to handle large input files efficiently without loading the entire list into memory. VirusTotal and Shodan are queried **concurrently per IP**.
 - If one IP fails (e.g. API error, network issue), the error is **logged in the report** for that IP and the tool **continues to the next IP** after the rate-limit delay. It does not abort the entire run.
 - Progress is shown as `[1/5] Processing 8.8.8.8...` so you can see which IP is being processed.
 
