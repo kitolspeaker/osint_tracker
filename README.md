@@ -127,3 +127,7 @@ cargo build --release
 ./target/release/osint_tracker --ip 8.8.8.8
 ./target/release/osint_tracker --file ips.txt
 ```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
